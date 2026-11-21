@@ -32,14 +32,20 @@ from .config import AREA, OUTPUT_DIR
 from .core import ACCUMULATION_ATTR, ACCUMULATION_HOURLY
 
 
-# Reanalysis model to request. Without `models` Open-Meteo answers with
+# Reanalysis models to request. Without `models` Open-Meteo answers with
 # "Best Match", a blend of IFS HRES, ERA5 and ERA5-Land whose composition
 # changes across years - not one source to rank analog dates against.
-# ERA5-Land is the dataset the CDS backend retrieves, so the two agree.
-OPEN_METEO_MODEL = "era5_land"
+# ERA5-Land is the dataset the CDS backend retrieves, so the land-surface
+# variables come from it. Open-Meteo's ERA5-Land returns null for
+# precipitation, radiation and cloud cover, so those come from ERA5; the CDS
+# backend likewise takes cloud cover from ERA5 single levels.
+OPEN_METEO_ERA5_VARIABLES = frozenset(
+    {"precipitation", "shortwave_radiation", "cloud_cover", "cloud_cover_low"}
+)
+OPEN_METEO_MODEL = "era5_land+era5"
 
 # Open-Meteo hourly variables that map to the columns in calculate_daily_metrics.
-# Order matters: we request all of them in one HTTP call.
+# Requested with one call per model; see OPEN_METEO_ERA5_VARIABLES.
 OPEN_METEO_DEFAULT_HOURLY = [
     "temperature_2m",
     "precipitation",
@@ -153,26 +159,37 @@ def fetch_open_meteo_archive(
     # its 00:00 sample (the hour ending the requested month's final day).
     end_date = boundary.strftime("%Y-%m-%d")
 
-    response = requests.get(
-        "https://archive-api.open-meteo.com/v1/archive",
-        params={
-            "latitude": f"{lat:.4f}",
-            "longitude": f"{lon:.4f}",
-            "start_date": start_date,
-            "end_date": end_date,
-            "hourly": ",".join(variables),
-            "timezone": "UTC",
-            "models": OPEN_METEO_MODEL,
-        },
-        timeout=timeout,
-    )
-    response.raise_for_status()
-    payload = response.json()
-    if "hourly" not in payload:
-        raise RuntimeError(
-            f"Open-Meteo response did not contain 'hourly' block: keys={list(payload.keys())}"
+    by_model = {}
+    for name in variables:
+        model = "era5" if name in OPEN_METEO_ERA5_VARIABLES else "era5_land"
+        by_model.setdefault(model, []).append(name)
+
+    hourly = {}
+    for model, names in by_model.items():
+        response = requests.get(
+            "https://archive-api.open-meteo.com/v1/archive",
+            params={
+                "latitude": f"{lat:.4f}",
+                "longitude": f"{lon:.4f}",
+                "start_date": start_date,
+                "end_date": end_date,
+                "hourly": ",".join(names),
+                "timezone": "UTC",
+                "models": model,
+            },
+            timeout=timeout,
         )
-    hourly = payload["hourly"]
+        response.raise_for_status()
+        payload = response.json()
+        if "hourly" not in payload:
+            raise RuntimeError(
+                f"Open-Meteo response did not contain 'hourly' block: keys={list(payload.keys())}"
+            )
+        block = payload["hourly"]
+        if "time" in hourly and block["time"] != hourly["time"]:
+            raise RuntimeError(f"Open-Meteo {model} hours differ from the other model's")
+        hourly["time"] = block["time"]
+        hourly.update({name: block[name] for name in names if name in block})
     keep = pd.to_datetime(hourly["time"]) <= boundary
     hourly = {name: [value for value, include in zip(values, keep) if include]
               for name, values in hourly.items()}

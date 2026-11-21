@@ -15,6 +15,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from metafilter.open_meteo import OPEN_METEO_ERA5_VARIABLES
 from scripts.download_open_meteo import (
     OPEN_METEO_DEFAULT_HOURLY,
     _snap_to_era5_grid,
@@ -177,14 +178,39 @@ def test_fetch_open_meteo_archive_calls_archive_endpoint():
             area={"west": 18.0, "east": 18.2, "south": 59.2, "north": 59.4},
         )
 
-    mock_get.assert_called_once()
-    call = mock_get.call_args
-    assert "archive-api.open-meteo.com" in call.args[0]
-    params = call.kwargs["params"]
-    assert params["start_date"] == "2024-08-01"
-    assert params["end_date"] == "2024-09-01"
-    assert "temperature_2m" in params["hourly"]
+    assert mock_get.call_count == 2
+    requested = {}
+    for call in mock_get.call_args_list:
+        assert "archive-api.open-meteo.com" in call.args[0]
+        params = call.kwargs["params"]
+        assert params["start_date"] == "2024-08-01"
+        assert params["end_date"] == "2024-09-01"
+        requested[params["models"]] = set(params["hourly"].split(","))
+    assert requested["era5"] == set(OPEN_METEO_ERA5_VARIABLES)
+    assert "temperature_2m" in requested["era5_land"]
+    assert not requested["era5"] & requested["era5_land"]
     assert hourly == fake_hourly
+
+
+def test_fetch_takes_precipitation_radiation_and_cloud_from_era5():
+    """Open-Meteo's ERA5-Land returns null for these; the merged block must not."""
+    full = _build_om_hourly(start="2024-08-01", n_days=2)
+
+    def get(url, *, params, timeout):
+        names = params["hourly"].split(",")
+        block = {"time": full["time"]}
+        for name in names:
+            land_null = params["models"] == "era5_land" and name in OPEN_METEO_ERA5_VARIABLES
+            block[name] = [None] * len(full["time"]) if land_null else full[name]
+        response = MagicMock()
+        response.json.return_value = {"hourly": block}
+        return response
+
+    with patch("requests.get", side_effect=get):
+        hourly, _, _ = fetch_open_meteo_archive(2024, 8)
+
+    for name in OPEN_METEO_ERA5_VARIABLES:
+        assert all(value is not None for value in hourly[name]), name
 
 
 def test_fetch_open_meteo_archive_raises_when_hourly_missing():

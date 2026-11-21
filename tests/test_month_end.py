@@ -148,7 +148,7 @@ def test_public_api_fetches_boundary_and_replaces_old_cache(tmp_path, month):
         result = fetch_daily_meteorology(
             bbox_wgs84=AREA, date_start=last_day, date_end=last_day, cache_dir=tmp_path,
         )
-    assert len(calls) == 1
+    assert sorted(call["models"] for call in calls) == ["era5", "era5_land"]
     assert result.frame.date.tolist() == [last_day]
     assert result.frame.total_precip_mm.item() == pytest.approx(10)
     assert result.frame.ssrd_mj_m2.item() == pytest.approx(24)
