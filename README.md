@@ -221,8 +221,11 @@ Open-Meteo monthly responses are cached as validated NetCDF files under the
 configured cache directory, keyed by the pinned reanalysis models:
 land-surface variables from `era5_land`, precipitation, radiation and cloud
 cover from `era5` (Open-Meteo's ERA5-Land has none of them). Caches written
-under an earlier pin are ignored and refetched. Hourly values from both backends cover the hour
-ending at their stamp; CDS ERA5-Land running totals are converted on read.
+under an earlier pin are refetched, and older Open-Meteo NetCDF files are
+refused when read. On this backend precipitation and radiation therefore
+come from ERA5 (about 31 km), on the CDS backend from ERA5-Land (about
+9 km). Hourly values from both backends cover the hour ending at their
+stamp; CDS ERA5-Land running totals are converted on read.
 Both monthly downloaders include the following midnight so the final day's
 rainfall and radiation totals cover all 24 hours. This boundary sample does
 not add a date to the daily results. Older Open-Meteo caches without it are

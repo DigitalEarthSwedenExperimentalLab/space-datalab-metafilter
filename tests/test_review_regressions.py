@@ -75,8 +75,9 @@ def test_era5_backend_pins_a_reanalysis_model():
     response = Mock()
     response.json.return_value={'hourly':{'time':[]}}
     with patch('requests.get', return_value=response) as get:
-        fetch_open_meteo_archive(2024,8,area=AREA)
-    assert get.call_args.kwargs['params'].get('models') in {'era5','era5_land','era5_seamless'}
+        with pytest.raises(RuntimeError, match='returned no data'):
+            fetch_open_meteo_archive(2024,8,area=AREA)
+    assert all(call.kwargs['params'].get('models') in {'era5','era5_land'} for call in get.call_args_list)
 
 def test_process_cli_accepts_custom_aoi(tmp_path):
     path = write_dataset(tmp_path/'paris.nc',pd.date_range('2024-08-01',periods=25,freq='h'),{'t2m':[293.15], 'tp':[0.]},lat=48.75,lon=2.25)

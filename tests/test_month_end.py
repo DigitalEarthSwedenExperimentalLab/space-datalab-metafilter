@@ -129,6 +129,10 @@ def test_public_api_fetches_boundary_and_replaces_old_cache(tmp_path, month):
             "shortwave_radiation": [1e6 / 3600] * len(times),
             "soil_moisture_0_to_7cm": [0.25] * len(times),
             "cloud_cover": [10.] * len(times),
+            "cloud_cover_low": [5.] * len(times),
+            "soil_temperature_0_to_7cm": [15.] * len(times),
+            "snow_depth": [0.] * len(times),
+            "dew_point_2m": [10.] * len(times),
         }
 
     # This cache has the right model but lacks the required boundary sample.

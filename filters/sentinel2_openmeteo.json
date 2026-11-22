@@ -41,7 +41,7 @@
       "operator": "lt",
       "threshold": 0.30,
       "unit": "fraction",
-      "description": "Direct cloud signal at ~10:30 UTC overpass; comes in the same Open-Meteo response as the land variables."
+      "description": "Direct cloud signal at ~10:30 UTC overpass; Open-Meteo serves it from ERA5 alongside the land variables."
     },
     "cloud_low": {
       "name": "Low cloud cover at overpass",

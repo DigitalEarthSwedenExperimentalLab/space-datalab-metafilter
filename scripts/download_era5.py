@@ -279,9 +279,10 @@ def download_period(year, month, filter_path, area=None, variables=None):
 
       - `backend: "cds"` (default) — issue `reanalysis-era5-land` retrieves,
         plus `reanalysis-era5-single-levels` when any rule needs cloud cover.
-      - `backend: "open-meteo"` — single HTTP call per month against the
-        Historical Archive; cloud cover comes in the same response so the
-        returned `cloud` list is empty (signal lives in the land NetCDF).
+      - `backend: "open-meteo"` — one HTTP call per source model and month
+        against the Historical Archive (ERA5-Land for land variables, ERA5
+        for precipitation, radiation and cloud cover). Cloud cover is written
+        into the land NetCDF, so the returned `cloud` list is empty.
 
     In both cases, prepends the previous month when any active rule needs
     ≥7-day trailing data so rolling-window columns resolve on the first day
@@ -299,7 +300,7 @@ def download_period(year, month, filter_path, area=None, variables=None):
 
     backend = backend_for_filter(filter_path)
     if backend == "open-meteo":
-        # Open-Meteo response includes cloud cover; no separate retrieval.
+        # Cloud cover is written into the Open-Meteo land NetCDF; no cloud files.
         from scripts.download_open_meteo import download_open_meteo_land
         land_paths = [
             download_open_meteo_land(y, m, area=area, variables=variables)

@@ -23,6 +23,24 @@ def _month_dataset(year=2024, month=8, **attrs):
     return xr.Dataset(data, coords={"time": times, "latitude": [59.25], "longitude": [18.0]}, attrs=attrs)
 
 
+def test_routing_and_its_identity_change_together():
+    """Changing a variable's source model must come with a new OPEN_METEO_MODEL."""
+    from metafilter.open_meteo import _VAR_MAPPING
+
+    assert {name: row[1] for name, row in _VAR_MAPPING.items()} == {
+        "temperature_2m": "era5_land",
+        "precipitation": "era5",
+        "shortwave_radiation": "era5",
+        "cloud_cover": "era5",
+        "cloud_cover_low": "era5",
+        "soil_temperature_0_to_7cm": "era5_land",
+        "soil_moisture_0_to_7cm": "era5_land",
+        "snow_depth": "era5_land",
+        "dew_point_2m": "era5_land",
+    }
+    assert OPEN_METEO_MODEL == "era5_land+era5"
+
+
 def test_cache_name_is_keyed_by_model():
     assert OPEN_METEO_MODEL in _cache_name(BBOX, 2024, 8)
 
