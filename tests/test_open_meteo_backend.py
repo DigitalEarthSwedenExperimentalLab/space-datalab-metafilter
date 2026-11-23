@@ -15,6 +15,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from metafilter.core import MetafilterConfigurationError
 from scripts.download_open_meteo import (
     OPEN_METEO_DEFAULT_HOURLY,
     _snap_to_era5_grid,
@@ -163,6 +164,29 @@ def test_snap_to_era5_grid_collapses_neighbouring_bboxes():
 
 # ── Network fetch is mocked ───────────────────────────────────────────────
 
+# What the live archive returned for Lund (55.75 N, 13.25 E), 3-4 June 2024: the
+# variables each model leaves null. Literal on purpose, so a test fails when the
+# code routes a variable to a model that has no data for it.
+NULL_BY_MODEL = {
+    "era5_land": {"precipitation", "shortwave_radiation", "cloud_cover", "cloud_cover_low"},
+    "era5": {"snow_depth"},
+}
+
+
+def _archive_like(full, *, drop_first_hour=None):
+    """Fake archive endpoint that answers each model like the live one."""
+    def get(url, *, params, timeout):
+        times = full["time"][1:] if params["models"] == drop_first_hour else full["time"]
+        block = {"time": times}
+        for name in params["hourly"].split(","):
+            values = full[name][-len(times):]
+            block[name] = [None] * len(times) if name in NULL_BY_MODEL[params["models"]] else values
+        response = MagicMock()
+        response.json.return_value = {"hourly": block}
+        return response
+    return get
+
+
 def test_fetch_open_meteo_archive_calls_archive_endpoint():
     """fetch_open_meteo_archive must hit the right URL with the right params."""
     fake_hourly = _build_om_hourly(start="2024-08-01", n_days=2)
@@ -177,14 +201,90 @@ def test_fetch_open_meteo_archive_calls_archive_endpoint():
             area={"west": 18.0, "east": 18.2, "south": 59.2, "north": 59.4},
         )
 
-    mock_get.assert_called_once()
-    call = mock_get.call_args
-    assert "archive-api.open-meteo.com" in call.args[0]
-    params = call.kwargs["params"]
-    assert params["start_date"] == "2024-08-01"
-    assert params["end_date"] == "2024-09-01"
-    assert "temperature_2m" in params["hourly"]
+    assert mock_get.call_count == 2
+    requested = {}
+    for call in mock_get.call_args_list:
+        assert "archive-api.open-meteo.com" in call.args[0]
+        params = call.kwargs["params"]
+        assert params["start_date"] == "2024-08-01"
+        assert params["end_date"] == "2024-09-01"
+        requested[params["models"]] = set(params["hourly"].split(","))
+    assert requested == {
+        "era5": {"precipitation", "shortwave_radiation", "cloud_cover", "cloud_cover_low"},
+        "era5_land": {"temperature_2m", "soil_temperature_0_to_7cm",
+                      "soil_moisture_0_to_7cm", "snow_depth", "dew_point_2m"},
+    }
     assert hourly == fake_hourly
+
+
+def test_fetch_gets_every_variable_from_a_model_that_has_it():
+    """Each model leaves some variables null; the joined block must have them all."""
+    full = _build_om_hourly(start="2024-08-01", n_days=2)
+
+    with patch("requests.get", side_effect=_archive_like(full)):
+        hourly, _, _ = fetch_open_meteo_archive(2024, 8)
+
+    for name in OPEN_METEO_DEFAULT_HOURLY:
+        assert all(value is not None for value in hourly[name]), name
+
+
+def test_fetch_raises_when_a_model_returns_no_data_for_a_variable():
+    """An all-null variable must fail at fetch time, not as a rule that never passes."""
+    full = _build_om_hourly(start="2024-08-01", n_days=2)
+    get = _archive_like(full)
+
+    def precipitation_missing(url, *, params, timeout):
+        response = get(url, params=params, timeout=timeout)
+        block = response.json.return_value["hourly"]
+        if "precipitation" in block:
+            block["precipitation"] = [None] * len(block["time"])
+        return response
+
+    with patch("requests.get", side_effect=precipitation_missing):
+        with pytest.raises(RuntimeError, match="returned no data for \\['precipitation'\\]"):
+            fetch_open_meteo_archive(2024, 8)
+
+
+def test_fetch_accepts_a_variable_that_is_null_only_at_the_end():
+    """ERA5 is published about six days late: a partly null tail is data, not an error."""
+    full = _build_om_hourly(start="2024-08-01", n_days=2)
+    get = _archive_like(full)
+
+    def lag_tail(url, *, params, timeout):
+        response = get(url, params=params, timeout=timeout)
+        block = response.json.return_value["hourly"]
+        for name in params["hourly"].split(","):
+            if block[name] and block[name][0] is not None:
+                block[name] = block[name][:-12] + [None] * 12
+        return response
+
+    with patch("requests.get", side_effect=lag_tail):
+        hourly, _, _ = fetch_open_meteo_archive(2024, 8)
+    assert hourly["precipitation"][-1] is None and hourly["precipitation"][0] is not None
+
+
+def test_fetch_raises_when_the_models_disagree_on_the_hours():
+    full = _build_om_hourly(start="2024-08-01", n_days=2)
+
+    with patch("requests.get", side_effect=_archive_like(full, drop_first_hour="era5")):
+        with pytest.raises(RuntimeError, match="hours differ"):
+            fetch_open_meteo_archive(2024, 8)
+
+
+def test_fetch_refuses_a_variable_without_a_source_model():
+    with pytest.raises(ValueError, match="no source model"):
+        fetch_open_meteo_archive(2024, 8, variables=["temperature_2m", "wind_speed_10m"])
+
+
+def test_calculate_daily_metrics_refuses_files_from_the_old_routing(tmp_path):
+    """An Open-Meteo file written before ERA5 routing has no rain, radiation or cloud."""
+    dataset = open_meteo_json_to_dataset(_build_om_hourly(start="2024-08-01", n_days=2), 59.25, 18.0)
+    dataset.attrs["metafilter_source_model"] = "era5_land"
+    path = tmp_path / "openmeteo_land_2024_08.nc"
+    dataset.to_netcdf(path, engine="scipy")
+
+    with pytest.raises(MetafilterConfigurationError, match="Download it again"):
+        calculate_daily_metrics(str(path))
 
 
 def test_fetch_open_meteo_archive_raises_when_hourly_missing():

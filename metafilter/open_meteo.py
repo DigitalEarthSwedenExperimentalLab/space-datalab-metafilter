@@ -1,9 +1,9 @@
 """Open-Meteo Historical Archive backend for ERA5 retrieval.
 
-This is the second supported source for the same ERA5 data that
-`scripts/download_era5.py` fetches from the CDS API. The two backends are
-interchangeable from the filter-rule perspective — both produce datasets
-that `calculate_daily_metrics()` can consume identically.
+This is the second supported source for the ERA5 reanalysis that
+`scripts/download_era5.py` fetches from the CDS API. Both backends produce
+datasets that `calculate_daily_metrics()` consumes identically, but they do
+not take every variable from the same product: see "Sources" below.
 
 Differences from the CDS path:
 
@@ -11,17 +11,23 @@ Differences from the CDS path:
 * **Spatial:** A single point snapped to the ~0.25° ERA5 grid centroid of the
   requested AOI, versus the full bbox raster.
 * **Latency:** ~200 ms per call versus minutes/hours in the CDS queue.
-* **Cloud cover:** Returned in the same response as land variables (no separate
-  retrieval needed) — `download_period(backend="open-meteo")` returns
-  `cloud=[]` and the cloud signal lives in the land NetCDF.
+* **Sources:** Open-Meteo's ERA5-Land has no precipitation, radiation or cloud
+  cover (it returns null), so those come from ERA5 in a second request per
+  month and the land-surface variables from ERA5-Land. The CDS backend takes
+  precipitation and radiation from ERA5-Land and cloud cover from ERA5 single
+  levels, so precipitation and radiation differ in source and resolution
+  (ERA5, about 31 km, versus ERA5-Land, about 9 km) between the backends.
+* **Cloud cover:** Written into the same NetCDF as the land variables —
+  `download_period(backend="open-meteo")` returns `cloud=[]`.
 
-The adapter writes the JSON response to a NetCDF file with the same variable
+The adapter writes the JSON responses to a NetCDF file with the same variable
 names, dimensions, and coordinate conventions that ERA5-Land emits, so the
-downstream code path is bit-identical to the CDS case.
+downstream code path is the same as in the CDS case.
 """
 from __future__ import annotations
 
 import calendar
+import hashlib
 from pathlib import Path
 
 import numpy as np
@@ -32,14 +38,8 @@ from .config import AREA, OUTPUT_DIR
 from .core import ACCUMULATION_ATTR, ACCUMULATION_HOURLY
 
 
-# Reanalysis model to request. Without `models` Open-Meteo answers with
-# "Best Match", a blend of IFS HRES, ERA5 and ERA5-Land whose composition
-# changes across years - not one source to rank analog dates against.
-# ERA5-Land is the dataset the CDS backend retrieves, so the two agree.
-OPEN_METEO_MODEL = "era5_land"
-
 # Open-Meteo hourly variables that map to the columns in calculate_daily_metrics.
-# Order matters: we request all of them in one HTTP call.
+# Requested with one call per source model; see _VAR_MAPPING.
 OPEN_METEO_DEFAULT_HOURLY = [
     "temperature_2m",
     "precipitation",
@@ -53,7 +53,14 @@ OPEN_METEO_DEFAULT_HOURLY = [
 ]
 
 
-# Mapping: Open-Meteo variable name → (CDS-equivalent variable name, conversion function).
+# Mapping: Open-Meteo variable name → (CDS-equivalent variable name, source model,
+# conversion function).
+#
+# Source model: without `models` Open-Meteo answers with "Best Match", a blend of
+# IFS HRES, ERA5 and ERA5-Land whose composition changes across years - not one
+# source to rank analog dates against. Land-surface variables come from ERA5-Land,
+# the product the CDS backend retrieves. Open-Meteo's ERA5-Land returns null for
+# precipitation, radiation and cloud cover, so those come from ERA5.
 # The conversion function takes the raw Open-Meteo values (already a numpy array)
 # and returns the array in the same units the CDS-side NetCDF would carry, so
 # calculate_daily_metrics() doesn't need to know which backend produced the data.
@@ -70,16 +77,36 @@ OPEN_METEO_DEFAULT_HOURLY = [
 #     caches written before this carry `sd` and are still read.
 #   * soil_temperature: Open-Meteo °C, ERA5-Land Kelvin.
 _VAR_MAPPING = {
-    "temperature_2m":             ("t2m",   lambda v: v + 273.15),
-    "precipitation":              ("tp",    lambda v: v / 1000.0),
-    "shortwave_radiation":        ("ssrd",  lambda v: v * 3600.0),
-    "cloud_cover":                ("tcc",   lambda v: v / 100.0),
-    "cloud_cover_low":            ("lcc",   lambda v: v / 100.0),
-    "soil_temperature_0_to_7cm":  ("stl1",  lambda v: v + 273.15),
-    "soil_moisture_0_to_7cm":     ("swvl1", lambda v: v),
-    "snow_depth":                 ("sde",   lambda v: v),
-    "dew_point_2m":               ("d2m",   lambda v: v + 273.15),
+    "temperature_2m":             ("t2m",   "era5_land", lambda v: v + 273.15),
+    "precipitation":              ("tp",    "era5",      lambda v: v / 1000.0),
+    "shortwave_radiation":        ("ssrd",  "era5",      lambda v: v * 3600.0),
+    "cloud_cover":                ("tcc",   "era5",      lambda v: v / 100.0),
+    "cloud_cover_low":            ("lcc",   "era5",      lambda v: v / 100.0),
+    "soil_temperature_0_to_7cm":  ("stl1",  "era5_land", lambda v: v + 273.15),
+    "soil_moisture_0_to_7cm":     ("swvl1", "era5_land", lambda v: v),
+    "snow_depth":                 ("sde",   "era5_land", lambda v: v),
+    "dew_point_2m":               ("d2m",   "era5_land", lambda v: v + 273.15),
 }
+
+def _routing_identity(mapping=None):
+    """Identity of a routing table, written into datasets and cache names.
+
+    Derived from every variable's CDS name and source model, so any routing
+    change gives new cache names and old caches are refetched.
+    """
+    rows = sorted((name, row[0], row[1]) for name, row in (mapping or _VAR_MAPPING).items())
+    return "era5_land+era5-" + hashlib.sha256(repr(rows).encode()).hexdigest()[:8]
+
+
+OPEN_METEO_MODEL = _routing_identity()
+
+
+def _source_model(name):
+    """Open-Meteo model that serves one hourly variable."""
+    try:
+        return _VAR_MAPPING[name][1]
+    except KeyError:
+        raise ValueError(f"no source model configured for Open-Meteo variable {name!r}") from None
 
 
 def _snap_to_era5_grid(area, grid_deg=0.25):
@@ -101,7 +128,7 @@ def open_meteo_json_to_dataset(hourly_payload, lat, lon):
     lons = np.array([lon], dtype=np.float32)
 
     data_vars = {}
-    for om_name, (cds_name, convert) in _VAR_MAPPING.items():
+    for om_name, (cds_name, _model, convert) in _VAR_MAPPING.items():
         if om_name not in hourly_payload:
             continue
         raw = np.asarray(hourly_payload[om_name], dtype=np.float64)
@@ -137,8 +164,13 @@ def fetch_open_meteo_archive(
 ):
     """Fetch a month plus the following midnight, completing its last day.
 
-    Returns the parsed JSON 'hourly' block. Pure HTTP — no NetCDF I/O — so
-    this function is straightforward to mock in tests.
+    Requests each variable from its source model (one call per model), joins
+    the 'hourly' blocks on their shared time axis and returns
+    ``(hourly, lat, lon)``. Pure HTTP — no NetCDF I/O — so this function is
+    straightforward to mock in tests. Raises RuntimeError when a response has
+    no 'hourly' block, when a requested variable is absent or entirely null,
+    or when the two models return different hours; ValueError for a variable
+    with no configured source model.
     """
     import requests
 
@@ -153,26 +185,39 @@ def fetch_open_meteo_archive(
     # its 00:00 sample (the hour ending the requested month's final day).
     end_date = boundary.strftime("%Y-%m-%d")
 
-    response = requests.get(
-        "https://archive-api.open-meteo.com/v1/archive",
-        params={
-            "latitude": f"{lat:.4f}",
-            "longitude": f"{lon:.4f}",
-            "start_date": start_date,
-            "end_date": end_date,
-            "hourly": ",".join(variables),
-            "timezone": "UTC",
-            "models": OPEN_METEO_MODEL,
-        },
-        timeout=timeout,
-    )
-    response.raise_for_status()
-    payload = response.json()
-    if "hourly" not in payload:
-        raise RuntimeError(
-            f"Open-Meteo response did not contain 'hourly' block: keys={list(payload.keys())}"
+    by_model = {}
+    for name in variables:
+        by_model.setdefault(_source_model(name), []).append(name)
+
+    hourly = {}
+    for model, names in by_model.items():
+        response = requests.get(
+            "https://archive-api.open-meteo.com/v1/archive",
+            params={
+                "latitude": f"{lat:.4f}",
+                "longitude": f"{lon:.4f}",
+                "start_date": start_date,
+                "end_date": end_date,
+                "hourly": ",".join(names),
+                "timezone": "UTC",
+                "models": model,
+            },
+            timeout=timeout,
         )
-    hourly = payload["hourly"]
+        response.raise_for_status()
+        payload = response.json()
+        if "hourly" not in payload:
+            raise RuntimeError(
+                f"Open-Meteo response did not contain 'hourly' block: keys={list(payload.keys())}"
+            )
+        block = payload["hourly"]
+        empty = [name for name in names if all(v is None for v in block.get(name, []))]
+        if empty:  # an absent or all-null variable would silently fail every rule on it
+            raise RuntimeError(f"Open-Meteo {model} returned no data for {empty}")
+        if "time" in hourly and block["time"] != hourly["time"]:
+            raise RuntimeError(f"Open-Meteo {model} hours differ from the other model's")
+        hourly["time"] = block["time"]
+        hourly.update({name: block[name] for name in names})
     keep = pd.to_datetime(hourly["time"]) <= boundary
     hourly = {name: [value for value, include in zip(values, keep) if include]
               for name, values in hourly.items()}
@@ -190,7 +235,8 @@ def download_open_meteo_land(
     The output file has the same shape downstream code expects from a CDS
     `reanalysis-era5-land` retrieve, with the same variable names. The
     spatial grid is 1×1 (centroid only) — small AOIs see the same value
-    everywhere because Open-Meteo serves one ERA5 cell.
+    everywhere because Open-Meteo serves one grid cell per source model
+    (ERA5-Land and ERA5).
 
     Returns the absolute path of the written .nc file.
     """

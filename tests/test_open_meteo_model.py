@@ -1,4 +1,4 @@
-"""The Open-Meteo backend pins one reanalysis model and caches are bound to it."""
+"""The Open-Meteo backend pins its source models and caches are bound to the routing."""
 import calendar
 
 import numpy as np
@@ -7,7 +7,12 @@ import xarray as xr
 
 from metafilter.core import ACCUMULATION_ATTR, ACCUMULATION_HOURLY
 from metafilter.meteorology import _cache_name, _valid_cache
-from metafilter.open_meteo import OPEN_METEO_MODEL, open_meteo_json_to_dataset
+from metafilter.open_meteo import (
+    OPEN_METEO_MODEL,
+    _VAR_MAPPING,
+    _routing_identity,
+    open_meteo_json_to_dataset,
+)
 
 BBOX = {"west": 18.0, "south": 59.2, "east": 18.2, "north": 59.4}
 
@@ -21,6 +26,24 @@ def _month_dataset(year=2024, month=8, **attrs):
         for name, value in {"t2m": 293.15, "tp": 0.0, "ssrd": 1e5, "swvl1": 0.25}.items()
     }
     return xr.Dataset(data, coords={"time": times, "latitude": [59.25], "longitude": [18.0]}, attrs=attrs)
+
+
+def test_routing_is_pinned_and_its_identity_follows_it():
+    """The routing is pinned here; OPEN_METEO_MODEL changes with any routing change."""
+    assert {name: row[1] for name, row in _VAR_MAPPING.items()} == {
+        "temperature_2m": "era5_land",
+        "precipitation": "era5",
+        "shortwave_radiation": "era5",
+        "cloud_cover": "era5",
+        "cloud_cover_low": "era5",
+        "soil_temperature_0_to_7cm": "era5_land",
+        "soil_moisture_0_to_7cm": "era5_land",
+        "snow_depth": "era5_land",
+        "dew_point_2m": "era5_land",
+    }
+    assert OPEN_METEO_MODEL == _routing_identity()
+    moved = dict(_VAR_MAPPING, temperature_2m=("t2m", "era5", _VAR_MAPPING["temperature_2m"][2]))
+    assert _routing_identity(moved) != OPEN_METEO_MODEL
 
 
 def test_cache_name_is_keyed_by_model():

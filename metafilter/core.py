@@ -270,10 +270,29 @@ def _open_and_concat(file_paths):
             # alone, since `sd` elsewhere in ERA5 is snow water equivalent.
             if "sde" not in ds.data_vars and "sd" in ds.data_vars:
                 ds = ds.rename({"sd": "sde"})
+            _reject_stale_open_meteo(ds, path)
             datasets.append(ds.load())
 
     combined = datasets[0] if len(datasets) == 1 else xr.concat(datasets, dim="time")
     return combined.sortby("time").drop_duplicates(dim="time")
+
+
+def _reject_stale_open_meteo(ds, path):
+    """Refuse an Open-Meteo file written under another variable routing.
+
+    Files from the earlier ERA5-Land-only routing hold no precipitation,
+    radiation or cloud cover, so every rule on them would fail silently.
+    """
+    from .open_meteo import OPEN_METEO_MODEL
+
+    if ds.attrs.get("metafilter_source") != "open-meteo":
+        return
+    model = ds.attrs.get("metafilter_source_model")
+    if model != OPEN_METEO_MODEL:
+        raise MetafilterConfigurationError(
+            f"{path} was written by the Open-Meteo backend with models={model!r}; "
+            f"the current routing is {OPEN_METEO_MODEL!r}. Download it again."
+        )
 
 
 def _hourly_increments(var):

@@ -129,6 +129,10 @@ def test_public_api_fetches_boundary_and_replaces_old_cache(tmp_path, month):
             "shortwave_radiation": [1e6 / 3600] * len(times),
             "soil_moisture_0_to_7cm": [0.25] * len(times),
             "cloud_cover": [10.] * len(times),
+            "cloud_cover_low": [5.] * len(times),
+            "soil_temperature_0_to_7cm": [15.] * len(times),
+            "snow_depth": [0.] * len(times),
+            "dew_point_2m": [10.] * len(times),
         }
 
     # This cache has the right model but lacks the required boundary sample.
@@ -148,7 +152,7 @@ def test_public_api_fetches_boundary_and_replaces_old_cache(tmp_path, month):
         result = fetch_daily_meteorology(
             bbox_wgs84=AREA, date_start=last_day, date_end=last_day, cache_dir=tmp_path,
         )
-    assert len(calls) == 1
+    assert sorted(call["models"] for call in calls) == ["era5", "era5_land"]
     assert result.frame.date.tolist() == [last_day]
     assert result.frame.total_precip_mm.item() == pytest.approx(10)
     assert result.frame.ssrd_mj_m2.item() == pytest.approx(24)
