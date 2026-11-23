@@ -72,12 +72,14 @@ def test_era5_land_cumulative_ssrd_is_not_summed_repeatedly(tmp_path):
     assert result.loc[result.date=='2024-08-02','ssrd_mj_m2'].item()==24.0
 
 def test_era5_backend_pins_a_reanalysis_model():
-    response = Mock()
-    response.json.return_value={'hourly':{'time':[]}}
-    with patch('requests.get', return_value=response) as get:
-        with pytest.raises(RuntimeError, match='returned no data'):
-            fetch_open_meteo_archive(2024,8,area=AREA)
-    assert all(call.kwargs['params'].get('models') in {'era5','era5_land'} for call in get.call_args_list)
+    def get(url, *, params, timeout):
+        names = params['hourly'].split(',')
+        response = Mock()
+        response.json.return_value = {'hourly': {'time': ['2024-08-01T00:00'], **{n: [1.0] for n in names}}}
+        return response
+    with patch('requests.get', side_effect=get) as mocked:
+        fetch_open_meteo_archive(2024, 8, area=AREA)
+    assert sorted(call.kwargs['params'].get('models') for call in mocked.call_args_list) == ['era5', 'era5_land']
 
 def test_process_cli_accepts_custom_aoi(tmp_path):
     path = write_dataset(tmp_path/'paris.nc',pd.date_range('2024-08-01',periods=25,freq='h'),{'t2m':[293.15], 'tp':[0.]},lat=48.75,lon=2.25)

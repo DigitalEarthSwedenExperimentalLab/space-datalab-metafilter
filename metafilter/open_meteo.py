@@ -27,6 +27,7 @@ downstream code path is the same as in the CDS case.
 from __future__ import annotations
 
 import calendar
+import hashlib
 from pathlib import Path
 
 import numpy as np
@@ -87,10 +88,17 @@ _VAR_MAPPING = {
     "dew_point_2m":               ("d2m",   "era5_land", lambda v: v + 273.15),
 }
 
-# Identity of the routing above, written into datasets and cache names. Change it
-# whenever a variable's source model changes, so caches from the old routing are
-# refetched; tests pin the routing and this value together.
-OPEN_METEO_MODEL = "era5_land+era5"
+def _routing_identity(mapping=None):
+    """Identity of a routing table, written into datasets and cache names.
+
+    Derived from every variable's CDS name and source model, so any routing
+    change gives new cache names and old caches are refetched.
+    """
+    rows = sorted((name, row[0], row[1]) for name, row in (mapping or _VAR_MAPPING).items())
+    return "era5_land+era5-" + hashlib.sha256(repr(rows).encode()).hexdigest()[:8]
+
+
+OPEN_METEO_MODEL = _routing_identity()
 
 
 def _source_model(name):
@@ -156,8 +164,13 @@ def fetch_open_meteo_archive(
 ):
     """Fetch a month plus the following midnight, completing its last day.
 
-    Returns the parsed JSON 'hourly' block. Pure HTTP — no NetCDF I/O — so
-    this function is straightforward to mock in tests.
+    Requests each variable from its source model (one call per model), joins
+    the 'hourly' blocks on their shared time axis and returns
+    ``(hourly, lat, lon)``. Pure HTTP — no NetCDF I/O — so this function is
+    straightforward to mock in tests. Raises RuntimeError when a response has
+    no 'hourly' block, when a requested variable is absent or entirely null,
+    or when the two models return different hours; ValueError for a variable
+    with no configured source model.
     """
     import requests
 
@@ -222,7 +235,8 @@ def download_open_meteo_land(
     The output file has the same shape downstream code expects from a CDS
     `reanalysis-era5-land` retrieve, with the same variable names. The
     spatial grid is 1×1 (centroid only) — small AOIs see the same value
-    everywhere because Open-Meteo serves one ERA5 cell.
+    everywhere because Open-Meteo serves one grid cell per source model
+    (ERA5-Land and ERA5).
 
     Returns the absolute path of the written .nc file.
     """

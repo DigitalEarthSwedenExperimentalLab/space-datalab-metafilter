@@ -60,9 +60,12 @@ This repository currently supports two external data-fetching modes:
 4. **ERA5 archive via Open-Meteo Historical API** (alternative backend, no auth)
    - Script: `scripts/download_open_meteo.py`
    - Backend/service: Open-Meteo Historical Archive (`https://archive-api.open-meteo.com/v1/archive`)
-   - Purpose: Same ERA5 reanalysis data as paths 1 + 3, returned as JSON for a
-     single point snapped to the ~0.25° ERA5 cell of the AOI centroid. Cloud
-     cover comes in the same response, so no separate retrieve is needed.
+   - Purpose: ERA5 reanalysis for the AOI centroid, returned as JSON in two
+     requests per month: land-surface variables from ERA5-Land (about 9 km),
+     precipitation, radiation and cloud cover from ERA5 (about 31 km), written
+     into one NetCDF. Precipitation and radiation therefore come from ERA5
+     here and from ERA5-Land on the CDS path. Two requests per month roughly
+     double the Open-Meteo API call weight of a cold-cache run.
    - Selected via `"backend": "open-meteo"` in the filter profile.
    - The adapter writes a NetCDF with the same variable names and shape as a
      CDS-side ERA5-Land file, so downstream `calculate_daily_metrics()`
@@ -80,7 +83,7 @@ work without changes. Three additional profiles ship in `filters/`:
 | `filters/metafilter.json` | sentinel-2 | cds | (unchanged baseline) |
 | `filters/sentinel2_extended.json` | sentinel-2 | cds | overpass-time cloud cover, daily insolation, multi-window precip lookback (24h, 48h, 7d, 30d), 30-day GDD + rootzone moisture context |
 | `filters/sentinel1_default.json` | sentinel-1 | cds | pass-time skin-temperature, snow depth, dry-canopy gate, soil-moisture stability |
-| `filters/sentinel2_openmeteo.json` | sentinel-2 | open-meteo | same rules as `sentinel2_extended.json`, but data source is Open-Meteo's Historical Archive (no CDS auth/quota; one HTTP call covers land + cloud) |
+| `filters/sentinel2_openmeteo.json` | sentinel-2 | open-meteo | same rules as `sentinel2_extended.json`, but data source is Open-Meteo's Historical Archive (no CDS auth/quota; two requests per month: ERA5-Land for land variables, ERA5 for precipitation, radiation and cloud) |
 
 ### Choosing a data backend
 
@@ -91,7 +94,7 @@ consumes through the same code path.
 | Backend | Selected via | Auth | Quota | Spatial resolution | Cloud cover |
 |---|---|---|---|---|---|
 | `cds` (default) | absence of `backend` field, or `"backend": "cds"` | requires `.cdsapirc` | per-account CDS quota | full bbox at 0.1° (ERA5-Land); 0.25° for `reanalysis-era5-single-levels` cloud retrieve | separate `reanalysis-era5-single-levels` retrieve, auto-triggered when rules reference `tcc_*`/`lcc_*` |
-| `open-meteo` | `"backend": "open-meteo"` in profile | none | generous rate limits (no per-user quota) | single point snapped to 0.25° ERA5 cell centroid | bundled in the same hourly response |
+| `open-meteo` | `"backend": "open-meteo"` in profile | none | generous rate limits (no per-user quota) | AOI centroid; ERA5-Land and ERA5 grid cells | separate ERA5 request, written into the same NetCDF |
 
 `download_period(year, month, filter_path)` reads the `backend` field and
 dispatches to the right script (`scripts/download_era5.py` for CDS,

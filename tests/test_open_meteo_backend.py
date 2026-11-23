@@ -15,6 +15,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from metafilter.core import MetafilterConfigurationError
 from scripts.download_open_meteo import (
     OPEN_METEO_DEFAULT_HOURLY,
     _snap_to_era5_grid,
@@ -244,6 +245,24 @@ def test_fetch_raises_when_a_model_returns_no_data_for_a_variable():
             fetch_open_meteo_archive(2024, 8)
 
 
+def test_fetch_accepts_a_variable_that_is_null_only_at_the_end():
+    """ERA5 is published about six days late: a partly null tail is data, not an error."""
+    full = _build_om_hourly(start="2024-08-01", n_days=2)
+    get = _archive_like(full)
+
+    def lag_tail(url, *, params, timeout):
+        response = get(url, params=params, timeout=timeout)
+        block = response.json.return_value["hourly"]
+        for name in params["hourly"].split(","):
+            if block[name] and block[name][0] is not None:
+                block[name] = block[name][:-12] + [None] * 12
+        return response
+
+    with patch("requests.get", side_effect=lag_tail):
+        hourly, _, _ = fetch_open_meteo_archive(2024, 8)
+    assert hourly["precipitation"][-1] is None and hourly["precipitation"][0] is not None
+
+
 def test_fetch_raises_when_the_models_disagree_on_the_hours():
     full = _build_om_hourly(start="2024-08-01", n_days=2)
 
@@ -259,8 +278,6 @@ def test_fetch_refuses_a_variable_without_a_source_model():
 
 def test_calculate_daily_metrics_refuses_files_from_the_old_routing(tmp_path):
     """An Open-Meteo file written before ERA5 routing has no rain, radiation or cloud."""
-    from metafilter.core import MetafilterConfigurationError
-
     dataset = open_meteo_json_to_dataset(_build_om_hourly(start="2024-08-01", n_days=2), 59.25, 18.0)
     dataset.attrs["metafilter_source_model"] = "era5_land"
     path = tmp_path / "openmeteo_land_2024_08.nc"
