@@ -1,0 +1,5 @@
+# Written by running the notebooks
+.cache/
+*.nc
+.ipynb_checkpoints/
+.virtual_documents/

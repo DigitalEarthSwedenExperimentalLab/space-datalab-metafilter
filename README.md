@@ -15,6 +15,11 @@ Essentially it is a demonstration of how meteorological metadata can be used to 
 
 The work was co-developed with partners in the Space Data Lab 3.0 project.
 
+A worked example is in
+[`notebooks/070_CASE_110-Weather-Based-Selection.ipynb`](notebooks/070_CASE_110-Weather-Based-Selection.ipynb):
+it applies two filter profiles to Open-Meteo weather for an area east of Lund and checks them
+against the actual cloud cover of every Sentinel-2 overpass from Digital Earth Sweden.
+
 ---
 
 ## Features
